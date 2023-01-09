@@ -164,6 +164,7 @@ include("array.jl")
 include("conversions.jl")
 include("broadcast.jl")
 include("mapreduce.jl")
+include("accumulate.jl")
 
 allowscalar(x::Bool) = GPUArrays.allowscalar(x)
 
