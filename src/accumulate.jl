@@ -1,45 +1,4 @@
-# HACK: callback function for `launch_configuration` on platforms without support for
-#       trampolines as used by `@cfunction` (JuliaLang/julia#27174, JuliaLang/julia#32154)
-_localmem_cb = nothing
-_localmem_cint_cb(x::Cint) = Cint(something(_localmem_cb)(x))
-_localmem_cb_lock = Threads.ReentrantLock()
-
-"""
-    launch_configuration(fun::ROCFunction; localmem=0, max_threads=0)
-
-Calculate a suggested launch configuration for kernel `fun` requiring `localmem` bytes of
-dynamic shared memory. Returns a tuple with a suggested amount of threads, and the minimal
-amount of blocks to reach maximal occupancy. Optionally, the maximum amount of threads can
-be constrained using `max_threads`.
-
-In the case of a variable amount of shared memory, pass a callable object for `localmem`
-instead, taking a single integer representing the block size and returning the amount of
-dynamic shared memory for that configuration.
-"""
-function launch_configuration(fun::Runtime.ROCFunction; localmem::Union{Integer,Base.Callable}=0,
-                              max_threads::Integer=0)
-    blocks_ref = Ref{Cint}()
-    threads_ref = Ref{Cint}()
-    if isa(localmem, Integer)
-        cuOccupancyMaxPotentialBlockSize(blocks_ref, threads_ref, fun, C_NULL, localmem, max_threads)
-    elseif Sys.ARCH == :x86 || Sys.ARCH == :x86_64
-        localmem_cint = threads -> Cint(localmem(threads))
-        cb = @cfunction($localmem_cint, Cint, (Cint,))
-        cuOccupancyMaxPotentialBlockSize(blocks_ref, threads_ref, fun, cb, 0, max_threads)
-    else
-        lock(_localmem_cb_lock) do
-            global _localmem_cb
-            _localmem_cb = localmem
-            cb = @cfunction(_localmem_cint_cb, Cint, (Cint,))
-            cuOccupancyMaxPotentialBlockSize(blocks_ref, threads_ref, fun, cb, 0, max_threads)
-            _localmem_cb = nothing
-        end
-    end
-    return (blocks=Int(blocks_ref[]), threads=Int(threads_ref[]))
-end
-
 # scan and accumulate (shamelessly stolen from CUDA.jl: https://github.com/JuliaGPU/CUDA.jl/blob/master/src/accumulate.jl)
-
 ## COV_EXCL_START
 
 # partial scan of individual thread blocks within a grid
@@ -54,7 +13,6 @@ end
 function partial_scan(op::Function, output::AbstractArray{T}, input::AbstractArray,
                       Rdim, Rpre, Rpost, Rother, neutral, init,
                       ::Val{inclusive}=Val(true)) where {T, inclusive}
-#=
     threads = workgroupDim().x
     thread = workitemIdx().x
     block = workgroupIdx().x
@@ -132,7 +90,6 @@ function partial_scan(op::Function, output::AbstractArray{T}, input::AbstractArr
         end
         output[Ipre, i, Ipost] = val
     end
-=#
 
     return
 end
@@ -141,7 +98,6 @@ end
 function aggregate_partial_scan(op::Function, output::AbstractArray,
                                 aggregates::AbstractArray, Rdim, Rpre, Rpost, Rother,
                                 init)
-#=
     threads = workgroupDim().x
     thread = workitemIdx().x
     block = workgroupIdx().x
@@ -168,7 +124,6 @@ function aggregate_partial_scan(op::Function, output::AbstractArray,
 
         output[Ipre, i, Ipost] = val
     end
-=#
 
     return
 end
@@ -254,3 +209,22 @@ Base._accumulate!(op, output::AnyROCArray, input::AnyROCArray, dims::Integer, in
     scan!(op, output, input; dims=dims, init=init)
 
 Base.accumulate_pairwise!(op, result::AnyROCVector, v::AnyROCVector) = accumulate!(op, result, v)
+
+# default behavior unless dims are specified by the user
+function Base.accumulate(op, A::AnyROCArray;
+                         dims::Union{Nothing,Integer}=nothing, kw...)
+    if dims === nothing && !(A isa AbstractVector)
+        # This branch takes care of the cases not handled by `_accumulate!`.
+        return reshape(accumulate(op, A[:]; kw...), size(A))
+    end
+    nt = values(kw)
+    if isempty(kw)
+        out = similar(A, Base.promote_op(op, eltype(A), eltype(A)))
+    elseif keys(nt) === (:init,)
+        out = similar(A, Base.promote_op(op, typeof(nt.init), eltype(A)))
+    else
+        throw(ArgumentError("accumulate does not support the keyword arguments $(setdiff(keys(nt), (:init,)))"))
+    end
+    accumulate!(op, out, A; dims=dims, kw...)
+end
+
