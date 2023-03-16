@@ -53,8 +53,6 @@ if functional(:hip)
     include(joinpath(@__DIR__, "hip", "HIP.jl"))
 end
 
-include("common.jl")
-
 module Runtime
     using ..CEnum
     using Setfield
@@ -66,7 +64,7 @@ module Runtime
     import TimespanLogging: timespan_start, timespan_finish
 
     import ..AMDGPU
-    import ..AMDGPU: getinfo, getinfo_map
+    import ..AMDGPU: getinfo
 
     struct Adaptor end
 
@@ -91,6 +89,7 @@ module Runtime
     include("runtime/execution.jl")
     include("runtime/sync.jl")
     include("runtime/safe-load.jl")
+    include("runtime/fault.jl")
 end # module Runtime
 import .Runtime: Mem
 
@@ -121,12 +120,13 @@ module Device
 end
 import .Device: malloc, signal_exception, report_exception, report_oom, report_exception_frame
 import .Device: ROCDeviceArray, AS, HostCall, hostcall!
+import .Device: @ROCDynamicLocalArray, @ROCStaticLocalArray
 import .Device: workitemIdx, workgroupIdx, workgroupDim, gridItemDim, gridGroupDim
 import .Device: threadIdx, blockIdx, blockDim
 import .Device: sync_workgroup
 import .Device: @rocprint, @rocprintln, @rocprintf
 
-export ROCDeviceArray
+export ROCDeviceArray, @ROCDynamicLocalArray, @ROCStaticLocalArray
 export @rocprint, @rocprintln, @rocprintf
 export workitemIdx, workgroupIdx, workgroupDim, gridItemDim, gridGroupDim
 export sync_workgroup
@@ -258,6 +258,9 @@ function __init__()
                     break
                 end
             end
+
+            # Setup HSA fault handler
+            Runtime.setup_fault_handler()
         else
             @warn "HSA initialization failed with code $status"
         end
